@@ -267,8 +267,9 @@ def classify_eligibility(
     ]
 
     nigeria_exclusion_patterns = [
-        rf"\b(?:not available|not open|no hiring|cannot hire|can't hire)"
-        rf"\s+(?:in|from)\s+{re.escape(country)}\b",
+        rf"\b(?:not\s+(?:available|open|hiring)|no\s+hiring|"
+        rf"cannot\s+hire|can't\s+hire)\s+(?:(?:to|of)\s+)?"
+        rf"(?:applicants?\s+)?(?:in|from)\s+{re.escape(country)}\b",
         rf"\b{re.escape(country)}\s+(?:is\s+)?(?:excluded|not eligible)\b",
     ]
 

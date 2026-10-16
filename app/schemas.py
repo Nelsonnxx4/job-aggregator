@@ -1,5 +1,6 @@
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 
@@ -60,3 +61,15 @@ class JobRead(BaseModel):
     region: str | None
     posted_at: datetime | None
     created_at: datetime
+
+
+class ScoredJobRead(JobRead):
+    relevance_score: int = Field(ge=0, le=100)
+    eligibility: Literal[
+        "worldwide",
+        "emea",
+        "country_restricted",
+        "unknown",
+    ]
+    relevance_reasons: list[str]
+    eligibility_reason: str
