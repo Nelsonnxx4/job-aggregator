@@ -1,4 +1,6 @@
 
+from datetime import datetime, timezone
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -97,6 +99,7 @@ def test_filter_jobs_by_remote_scope(client):
             "url": "https://example.com/jobs/1",
             "source_id": source_id,
             "remote_scope": "worldwide",
+            "posted_at": datetime.now(timezone.utc).isoformat(),
         },
     )
 

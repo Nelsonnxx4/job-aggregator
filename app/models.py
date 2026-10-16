@@ -61,10 +61,10 @@ class Job(Base):
     )
 
     employment_type: Mapped[str | None] = mapped_column(
-        String(50), nullable=True
+        String(100), nullable=True
     )
     experience_level: Mapped[str | None] = mapped_column(
-        String(50), nullable=True
+        String(100), nullable=True
     )
 
     # Examples: worldwide, emea, country_restricted, onsite
