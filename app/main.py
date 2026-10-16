@@ -2,7 +2,7 @@
 from fastapi import FastAPI
 
 from app.config import settings
-from app.routers import jobs, sources
+from app.routers import ingestion, jobs, sources
 
 app = FastAPI(
     title=settings.app_name,
@@ -10,9 +10,10 @@ app = FastAPI(
     description="An API for collecting and filtering remote job listings.",
 )
 
+
 app.include_router(jobs.router)
 app.include_router(sources.router)
-
+app.include_router(ingestion.router)
 
 @app.get("/", tags=["Health"])
 def read_root() -> dict[str, str]:
