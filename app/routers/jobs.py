@@ -16,9 +16,19 @@ router = APIRouter(prefix="/jobs", tags=["Jobs"])
 Eligibility = Literal[
     "worldwide",
     "emea",
+    "region_restricted",
     "country_restricted",
+    "non_remote",
     "unknown",
 ]
+
+
+def _posted_at_sort_value(value: datetime | None) -> datetime:
+    if value is None:
+        return datetime.min.replace(tzinfo=timezone.utc)
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 @router.post(
@@ -38,10 +48,32 @@ def create_job(
             detail="Job source not found.",
         )
 
-    job = Job(
-        **payload.model_dump(exclude={"url"}),
-        url=str(payload.url),
-    )
+    job_values = payload.model_dump(exclude={"url"})
+    if (
+        payload.remote_scope != "unknown"
+        and payload.eligibility_confidence == "unknown"
+    ):
+        if payload.eligibility_confidence == "unknown":
+            job_values["eligibility_confidence"] = "verified"
+        job_values["eligibility_source"] = (
+            payload.eligibility_source or "manual"
+        )
+        job_values["eligibility_reason"] = (
+            payload.eligibility_reason
+            or "Geographic eligibility was explicitly provided when "
+            "creating the job."
+        )
+    if (
+        payload.remote_scope in {"non_remote", "onsite"}
+        and payload.remote_status == "unknown"
+    ):
+        job_values["remote_status"] = "onsite"
+        job_values["eligibility_source"] = "manual"
+        job_values["eligibility_reason"] = (
+            "Geographic eligibility was explicitly provided when creating "
+            "the job."
+        )
+    job = Job(**job_values, url=str(payload.url))
 
     db.add(job)
 
@@ -97,13 +129,28 @@ def list_jobs(
             description=job.description or "",
             location=job.location or "",
         )
+        job_eligibility = (
+            job.remote_scope
+            if job.eligibility_confidence in {"verified", "inferred"}
+            and job.remote_scope
+            in {
+                "worldwide",
+                "emea",
+                "region_restricted",
+                "country_restricted",
+                "non_remote",
+            }
+            else assessment.eligibility
+        )
+        if job.remote_status == "onsite":
+            job_eligibility = "non_remote"
 
         if assessment.relevance_score < min_score:
             continue
 
         if (
             eligibility is not None
-            and assessment.eligibility != eligibility
+            and job_eligibility != eligibility
         ):
             continue
 
@@ -120,13 +167,26 @@ def list_jobs(
                 "employment_type": job.employment_type,
                 "experience_level": job.experience_level,
                 "remote_scope": job.remote_scope,
+                "remote_status": job.remote_status,
                 "region": job.region,
                 "posted_at": job.posted_at,
+                "first_seen_at": job.first_seen_at,
+                "last_seen_at": job.last_seen_at,
+                "eligible_countries": job.eligible_countries,
+                "eligibility_confidence": job.eligibility_confidence,
+                "eligibility_source": job.eligibility_source,
+                "eligibility_reason": job.eligibility_reason,
+                "duplicate_of_id": job.duplicate_of_id,
                 "created_at": job.created_at,
                 "relevance_score": assessment.relevance_score,
-                "eligibility": assessment.eligibility,
+                "eligibility": job_eligibility,
                 "relevance_reasons": assessment.relevance_reasons,
-                "eligibility_reason": assessment.eligibility_reason,
+                "eligibility_reason": (
+                    job.eligibility_reason
+                    if job_eligibility == job.remote_scope
+                    and job.eligibility_reason
+                    else assessment.eligibility_reason
+                ),
             }
         )
 
@@ -134,9 +194,7 @@ def list_jobs(
         scored_jobs.sort(
             key=lambda item: (
                 item["relevance_score"],
-                item["posted_at"] or datetime.min.replace(
-                    tzinfo=timezone.utc
-                ),
+                _posted_at_sort_value(item["posted_at"]),
                 item["id"],
             ),
             reverse=True,
@@ -145,9 +203,7 @@ def list_jobs(
         scored_jobs.sort(
             key=lambda item: (
                 item["posted_at"] is not None,
-                item["posted_at"] or datetime.min.replace(
-                    tzinfo=timezone.utc
-                ),
+                _posted_at_sort_value(item["posted_at"]),
                 item["id"],
             ),
             reverse=True,

@@ -15,7 +15,15 @@ from sqlalchemy.orm import Session
 
 from app.config import Settings
 from app.ingestion.arbeitnow import clean_html
+from app.ingestion.deduplication import find_cross_source_duplicate
+from app.ingestion.http import get_with_retries
+from app.ingestion.run_tracking import (
+    IngestionAlreadyRunning,
+    execute_tracked_ingestion,
+    record_unavailable_source,
+)
 from app.models import Job, JobSource
+from app.services.job_scoring import classify_eligibility
 
 logger = logging.getLogger(__name__)
 
@@ -215,7 +223,17 @@ def _to_feed_job(
         return None
 
     normalized_url = urljoin(feed_url, url)
-    if urlparse(normalized_url).scheme not in {"http", "https"}:
+    parsed_url = urlparse(normalized_url)
+    if (
+        parsed_url.scheme not in {"http", "https"}
+        or not parsed_url.hostname
+        or parsed_url.username
+        or parsed_url.password
+    ):
+        return None
+    try:
+        parsed_url.port
+    except ValueError:
         return None
 
     normalized_title = title.strip()
@@ -284,9 +302,7 @@ def _parse_json_feed(payload: dict[str, Any], feed_url: str) -> list[FeedJob]:
             title=_json_string(item, "title"),
             company=company,
             url=_json_string(item, "url", "external_url"),
-            posted_at=_parse_posted_at(
-                item.get("date_published") or item.get("date_modified")
-            ),
+            posted_at=_parse_posted_at(item.get("date_published")),
             description=_json_string(
                 item, "content_html", "content_text", "summary"
             ),
@@ -329,7 +345,7 @@ def _parse_xml_feed(payload: str, feed_url: str) -> list[FeedJob]:
             company=company,
             url=_xml_link(entry),
             posted_at=_parse_posted_at(
-                _xml_text(entry, {"pubdate", "published", "updated", "date"})
+                _xml_text(entry, {"pubdate", "published"})
             ),
             description=_xml_text(
                 entry, {"description", "summary", "content", "encoded"}
@@ -386,6 +402,10 @@ def _validated_feed_url(feed_url: str) -> str:
         raise ValueError("Feed URL must be an absolute HTTP or HTTPS URL")
     if parsed.username or parsed.password:
         raise ValueError("Feed URL must not include embedded credentials")
+    try:
+        parsed.port
+    except ValueError as exc:
+        raise ValueError("Feed URL contains an invalid port") from exc
     return feed_url
 
 
@@ -394,6 +414,8 @@ def ingest_job_feed(
     source: FeedSource,
     *,
     days: int = 30,
+    retry_attempts: int = 2,
+    retry_backoff_seconds: float = 0.5,
 ) -> dict[str, int]:
     if days < 1:
         raise ValueError("days must be at least 1")
@@ -414,35 +436,54 @@ def ingest_job_feed(
         cutoff = datetime.now(timezone.utc) - timedelta(days=days)
 
         with httpx.Client(timeout=20.0) as client:
-            response = client.get(
-                feed_url,
-                headers={
-                    "Accept": (
-                        "application/feed+json, application/json, "
-                        "application/atom+xml, application/rss+xml, "
-                        "application/xml, text/xml"
-                    )
-                },
+            response = get_with_retries(
+                lambda: client.get(
+                    feed_url,
+                    headers={
+                        "Accept": (
+                            "application/feed+json, application/json, "
+                            "application/atom+xml, application/rss+xml, "
+                            "application/xml, text/xml"
+                        )
+                    },
+                ),
+                retries=retry_attempts,
+                backoff_seconds=retry_backoff_seconds,
             )
-            response.raise_for_status()
 
         jobs = parse_job_feed(response.text, feed_url)
         stats["fetched"] = _count_feed_entries(response.text)
         for job in jobs:
-            if job.posted_at < cutoff:
-                stats["stale"] += 1
-                continue
-
             existing_job = db.scalar(
-                select(Job.id).where(
+                select(Job).where(
                     Job.source_id == db_source.id,
                     Job.external_id == job.external_id,
                 )
             )
             if existing_job is not None:
+                existing_job.last_seen_at = datetime.now(timezone.utc)
                 stats["duplicates"] += 1
                 continue
 
+            if job.posted_at < cutoff:
+                stats["stale"] += 1
+                continue
+
+            duplicate_of_id = find_cross_source_duplicate(
+                db,
+                source_id=db_source.id,
+                title=job.title,
+                company=job.company,
+                url=job.url,
+            )
+            remote_scope, eligibility_reason = classify_eligibility(
+                title=job.title,
+                description=job.description,
+                location=job.location,
+            )
+            eligibility_confidence = (
+                "inferred" if remote_scope != "unknown" else "unknown"
+            )
             db.add(
                 Job(
                     source_id=db_source.id,
@@ -455,17 +496,32 @@ def ingest_job_feed(
                     employment_type=job.employment_type,
                     experience_level=job.experience_level,
                     posted_at=job.posted_at,
-                    remote_scope="unknown",
+                    remote_scope=remote_scope,
+                    remote_status="remote",
                     region=None,
+                    eligible_countries=[],
+                    eligibility_confidence=eligibility_confidence,
+                    eligibility_source=(
+                        "feed_text" if eligibility_confidence == "inferred"
+                        else "feed"
+                    ),
+                    eligibility_reason=eligibility_reason,
+                    duplicate_of_id=duplicate_of_id,
                 )
             )
             stats["saved"] += 1
+            if duplicate_of_id is not None:
+                stats["duplicates"] += 1
 
         stats["skipped"] = stats["fetched"] - len(jobs)
         db.commit()
-    except Exception:
+    except Exception as exc:
         db.rollback()
-        logger.exception("Job feed ingestion failed for source %s", source.slug)
+        logger.error(
+            "Job feed ingestion failed for source %s (%s)",
+            source.slug,
+            type(exc).__name__,
+        )
         raise
 
     return stats
@@ -497,14 +553,53 @@ def ingest_configured_job_feeds(
     results: dict[str, dict[str, object]] = {}
     for source in configured_feed_sources(settings):
         if not source.feed_url:
+            record_unavailable_source(
+                db,
+                source_name=source.name,
+                source_slug=source.slug,
+                status="not_configured",
+            )
             results[source.slug] = FeedIngestionResult(
                 status="not_configured",
                 configuration=source.setting_name,
             ).as_dict()
             continue
 
+        existing_source = db.scalar(
+            select(JobSource).where(JobSource.slug == source.slug)
+        )
+        if existing_source is not None and not existing_source.is_active:
+            record_unavailable_source(
+                db,
+                source_name=source.name,
+                source_slug=source.slug,
+                status="disabled",
+            )
+            results[source.slug] = FeedIngestionResult(
+                status="disabled"
+            ).as_dict()
+            continue
+
         try:
-            stats = ingest_job_feed(db, source, days=days)
+            stats = execute_tracked_ingestion(
+                db,
+                source_name=source.name,
+                source_slug=source.slug,
+                ingest=lambda: ingest_job_feed(
+                    db,
+                    source,
+                    days=days,
+                    retry_attempts=settings.ingestion_retry_attempts,
+                    retry_backoff_seconds=(
+                        settings.ingestion_retry_backoff_seconds
+                    ),
+                ),
+            )
+        except IngestionAlreadyRunning:
+            results[source.slug] = FeedIngestionResult(
+                status="already_running"
+            ).as_dict()
+            continue
         except Exception as exc:
             results[source.slug] = FeedIngestionResult(
                 status="failed",

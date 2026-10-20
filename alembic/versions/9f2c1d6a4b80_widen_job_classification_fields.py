@@ -18,34 +18,32 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.alter_column(
-        "jobs",
-        "employment_type",
-        existing_type=sa.String(length=50),
-        type_=sa.String(length=100),
-        existing_nullable=True,
-    )
-    op.alter_column(
-        "jobs",
-        "experience_level",
-        existing_type=sa.String(length=50),
-        type_=sa.String(length=100),
-        existing_nullable=True,
-    )
+    with op.batch_alter_table("jobs") as batch:
+        batch.alter_column(
+            "employment_type",
+            existing_type=sa.String(length=50),
+            type_=sa.String(length=100),
+            existing_nullable=True,
+        )
+        batch.alter_column(
+            "experience_level",
+            existing_type=sa.String(length=50),
+            type_=sa.String(length=100),
+            existing_nullable=True,
+        )
 
 
 def downgrade() -> None:
-    op.alter_column(
-        "jobs",
-        "experience_level",
-        existing_type=sa.String(length=100),
-        type_=sa.String(length=50),
-        existing_nullable=True,
-    )
-    op.alter_column(
-        "jobs",
-        "employment_type",
-        existing_type=sa.String(length=100),
-        type_=sa.String(length=50),
-        existing_nullable=True,
-    )
+    with op.batch_alter_table("jobs") as batch:
+        batch.alter_column(
+            "experience_level",
+            existing_type=sa.String(length=100),
+            type_=sa.String(length=50),
+            existing_nullable=True,
+        )
+        batch.alter_column(
+            "employment_type",
+            existing_type=sa.String(length=100),
+            type_=sa.String(length=50),
+            existing_nullable=True,
+        )

@@ -1,8 +1,16 @@
 
-from fastapi import FastAPI
+import logging
+
+from fastapi import Depends, FastAPI, HTTPException, status
+from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.database import get_db
 from app.routers import ingestion, jobs, sources
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title=settings.app_name,
@@ -21,5 +29,16 @@ def read_root() -> dict[str, str]:
 
 
 @app.get("/health", tags=["Health"])
-def health_check() -> dict[str, str]:
+def health_check(db: Session = Depends(get_db)) -> dict[str, str]:
+    try:
+        db.execute(text("SELECT 1"))
+    except SQLAlchemyError as exc:
+        logger.error(
+            "Health check database query failed (%s)",
+            type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database unavailable.",
+        ) from exc
     return {"status": "healthy"}

@@ -79,6 +79,31 @@ def test_create_source_and_job(client):
 
     assert job_response.status_code == 201
     assert job_response.json()["title"] == "Junior Frontend Developer"
+    assert job_response.json()["eligibility_confidence"] == "verified"
+    assert job_response.json()["remote_status"] == "unknown"
+
+
+def test_source_registration_is_idempotent_and_can_be_disabled(client):
+    payload = {
+        "name": "Example Jobs",
+        "slug": "example-jobs",
+        "base_url": "https://example.com",
+    }
+
+    created = client.post("/sources", json=payload)
+    reused = client.post("/sources", json=payload)
+
+    assert created.status_code == 201
+    assert reused.status_code == 200
+    assert reused.json()["id"] == created.json()["id"]
+
+    disabled = client.patch(
+        f"/sources/{created.json()['id']}",
+        json={"is_active": False},
+    )
+
+    assert disabled.status_code == 200
+    assert disabled.json()["is_active"] is False
 
 
 def test_filter_jobs_by_remote_scope(client):

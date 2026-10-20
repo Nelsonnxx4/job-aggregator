@@ -8,7 +8,11 @@ from sqlalchemy.pool import StaticPool
 
 from app.database import Base, get_db
 from app.ingestion import arbeitnow
-from app.models import Job, JobSource
+from app.ingestion.run_tracking import (
+    IngestionAlreadyRunning,
+    execute_tracked_ingestion,
+)
+from app.models import IngestionRun, Job, JobSource
 from app.main import app
 from app.routers import ingestion as ingestion_router
 
@@ -286,7 +290,8 @@ def test_logs_and_reraises_external_http_failure(
         arbeitnow.ingest_arbeitnow(db)
 
     assert "Arbeitnow ingestion failed" in caplog.text
-    assert "upstream request failed" in caplog.text
+    assert "RuntimeError" in caplog.text
+    assert "upstream request failed" not in caplog.text
     assert db.scalar(select(JobSource).where(JobSource.slug == "arbeitnow"))
     assert db.scalar(select(Job.id)) is None
 
@@ -316,8 +321,79 @@ def test_rolls_back_jobs_when_page_commit_fails(
     assert db.scalar(select(Job.id)) is None
 
 
+def test_rolls_back_all_pages_when_a_later_fetch_fails(
+    db: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    patch_client(
+        monkeypatch,
+        [
+            response([valid_job()], has_next=True),
+            FakeResponse({}, error=RuntimeError("second page failed")),
+        ],
+    )
+
+    with pytest.raises(RuntimeError, match="second page failed"):
+        arbeitnow.ingest_arbeitnow(db, max_pages=3)
+
+    assert db.scalar(select(JobSource).where(JobSource.slug == "arbeitnow"))
+    assert db.scalar(select(Job.id)) is None
+
+
+def test_rejects_overlapping_runs_for_the_same_source(
+    db: Session,
+) -> None:
+    db.add(
+        IngestionRun(
+            source_slug="arbeitnow",
+            source_name="Arbeitnow",
+            started_at=datetime.now(timezone.utc),
+            status="running",
+        )
+    )
+    db.commit()
+
+    with pytest.raises(IngestionAlreadyRunning):
+        execute_tracked_ingestion(
+            db,
+            source_name="Arbeitnow",
+            source_slug="arbeitnow",
+            ingest=lambda: pytest.fail("overlapping run must not execute"),
+        )
+
+
+def test_recovers_a_stale_running_record(
+    db: Session,
+) -> None:
+    stale_run = IngestionRun(
+        source_slug="arbeitnow",
+        source_name="Arbeitnow",
+        started_at=datetime.now(timezone.utc) - timedelta(hours=3),
+        status="running",
+    )
+    db.add(stale_run)
+    db.commit()
+    stale_run_id = stale_run.id
+
+    stats = execute_tracked_ingestion(
+        db,
+        source_name="Arbeitnow",
+        source_slug="arbeitnow",
+        ingest=lambda: {"fetched": 1, "saved": 1},
+    )
+
+    db.refresh(stale_run)
+    assert stats == {"fetched": 1, "saved": 1}
+    assert stale_run.status == "failed"
+    assert stale_run.error_summary == "StaleRunRecovered"
+    assert db.scalar(
+        select(IngestionRun.id).where(IngestionRun.id != stale_run_id)
+    ) is not None
+
+
 def test_ingestion_endpoint_returns_success_statistics(
     client: TestClient,
+    db: Session,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     stats = {
@@ -333,10 +409,14 @@ def test_ingestion_endpoint_returns_success_statistics(
         *,
         days: int,
         max_pages: int,
+        retry_attempts: int,
+        retry_backoff_seconds: float,
     ) -> dict[str, int]:
         assert _db.is_active
         assert days == 30
         assert max_pages == 3
+        assert retry_attempts == 2
+        assert retry_backoff_seconds == 0.5
         return stats
 
     monkeypatch.setattr(
@@ -350,21 +430,30 @@ def test_ingestion_endpoint_returns_success_statistics(
         "message": "Arbeitnow ingestion completed",
         "stats": stats,
     }
+    run = db.scalar(select(IngestionRun))
+    assert run is not None
+    assert run.status == "completed"
+    assert run.saved == 1
 
 
 def test_ingestion_endpoint_returns_safe_error_on_failure(
     client: TestClient,
+    db: Session,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def fail_ingest(
         _db: Session,
         *,
-        _days: int,
-        _max_pages: int,
+        days: int,
+        max_pages: int,
+        retry_attempts: int,
+        retry_backoff_seconds: float,
     ) -> dict[str, int]:
         assert _db.is_active
-        assert _days == 30
-        assert _max_pages == 3
+        assert days == 30
+        assert max_pages == 3
+        assert retry_attempts == 2
+        assert retry_backoff_seconds == 0.5
         raise RuntimeError("private database details")
 
     monkeypatch.setattr(
@@ -378,6 +467,10 @@ def test_ingestion_endpoint_returns_safe_error_on_failure(
         "detail": "Arbeitnow ingestion failed. Check the server logs."
     }
     assert "private database details" not in response.text
+    run = db.scalar(select(IngestionRun))
+    assert run is not None
+    assert run.status == "failed"
+    assert run.error_summary == "RuntimeError"
 
 
 @pytest.mark.parametrize(

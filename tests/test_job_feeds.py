@@ -11,7 +11,7 @@ from app.config import Settings
 from app.database import Base, get_db
 from app.ingestion import job_feeds
 from app.main import app
-from app.models import Job, JobSource
+from app.models import IngestionRun, Job, JobSource
 from app.routers import ingestion as ingestion_router
 
 test_engine = create_engine(
@@ -189,6 +189,28 @@ def test_parses_json_feed_and_supports_author_as_company() -> None:
     )
 
 
+def test_json_modified_date_does_not_substitute_for_publication_date() -> None:
+    payload = json.dumps(
+        {
+            "version": "https://jsonfeed.org/version/1.1",
+            "items": [
+                {
+                    "id": "modified-job",
+                    "title": "Frontend Engineer",
+                    "url": "https://example.com/jobs/modified",
+                    "date_modified": _rfc_date(),
+                    "author": {"name": "Example Co"},
+                }
+            ],
+        }
+    )
+
+    assert job_feeds.parse_job_feed(
+        payload,
+        "https://example.com/feed.json",
+    ) == []
+
+
 def test_parses_atom_feed() -> None:
     atom = f"""
     <feed xmlns="http://www.w3.org/2005/Atom">
@@ -252,6 +274,90 @@ def test_ingests_jobs_deduplicates_and_keeps_eligibility_unknown(
     assert jobs[0].region is None
 
 
+def test_repeat_ingestion_refreshes_last_seen_for_stored_stale_job(
+    db: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = job_feeds.FeedSource(
+        name="Dover",
+        slug="dover",
+        base_url="https://www.dover.com",
+        setting_name="DOVER_FEED_URL",
+        feed_url="https://feeds.example.com/dover.xml",
+    )
+    feed = _rss_feed(_rss_job())
+    _patch_clients(
+        monkeypatch,
+        [FakeResponse(feed)],
+        [FakeResponse(feed)],
+    )
+    job_feeds.ingest_job_feed(db, source)
+    stored_job = db.scalar(select(Job))
+    assert stored_job is not None
+    old_seen_at = stored_job.last_seen_at
+    stored_job.posted_at = datetime(2020, 1, 1, tzinfo=timezone.utc)
+    db.commit()
+
+    stats = job_feeds.ingest_job_feed(db, source)
+
+    db.refresh(stored_job)
+    assert stats["duplicates"] == 1
+    assert stats["stale"] == 0
+    assert stored_job.last_seen_at >= old_seen_at
+
+
+def test_cross_source_duplicate_is_linked_without_discarding_source(
+    db: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_source = JobSource(
+        name="Original Source",
+        slug="original-source",
+        base_url="https://example.com",
+        is_active=True,
+    )
+    db.add(original_source)
+    db.flush()
+    original_job = Job(
+        source_id=original_source.id,
+        external_id="canonical-1",
+        title="Frontend Engineer",
+        company="Example Co",
+        url="https://www.jobs.example.com/job-1?utm_source=old",
+        posted_at=datetime.now(timezone.utc),
+        remote_scope="unknown",
+    )
+    db.add(original_job)
+    db.commit()
+
+    feed_source = job_feeds.FeedSource(
+        name="Dover",
+        slug="dover",
+        base_url="https://www.dover.com",
+        setting_name="DOVER_FEED_URL",
+        feed_url="https://feeds.example.com/dover.xml",
+    )
+    feed = _rss_feed(
+        _rss_job(
+            "job-1",
+            company="Example Co",
+        ).replace(
+            "https://jobs.example.com/job-1",
+            "https://jobs.example.com/job-1?utm_source=new",
+        )
+    )
+    _patch_clients(monkeypatch, [FakeResponse(feed)])
+
+    stats = job_feeds.ingest_job_feed(db, feed_source)
+    jobs = list(db.scalars(select(Job).order_by(Job.id)).all())
+
+    assert stats["saved"] == 1
+    assert stats["duplicates"] == 1
+    assert len(jobs) == 2
+    assert jobs[1].duplicate_of_id == original_job.id
+    assert jobs[1].source_id != original_job.source_id
+
+
 def test_counts_stale_and_invalid_items(
     db: Session,
     monkeypatch: pytest.MonkeyPatch,
@@ -302,6 +408,7 @@ def test_configured_source_failures_do_not_stop_other_sources(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     settings = Settings(
+        _env_file=None,
         database_url="sqlite+pysqlite:///:memory:",
         hiring_cafe_feed_url="https://feed.example.com/hiring-cafe.json",
         dover_feed_url="https://feed.example.com/dover.json",
@@ -312,8 +419,12 @@ def test_configured_source_failures_do_not_stop_other_sources(
         source: job_feeds.FeedSource,
         *,
         days: int,
+        retry_attempts: int,
+        retry_backoff_seconds: float,
     ) -> dict[str, int]:
         assert days == 30
+        assert retry_attempts == 2
+        assert retry_backoff_seconds == 0.5
         if source.slug == "hiring-cafe":
             raise RuntimeError("upstream error details")
         return {
@@ -337,16 +448,24 @@ def test_configured_source_failures_do_not_stop_other_sources(
         "status": "not_configured",
         "configuration": "JOBBERMAN_FEED_URL",
     }
+    runs = {
+        run.source_slug: run
+        for run in db.scalars(select(IngestionRun)).all()
+    }
+    assert runs["hiring-cafe"].status == "failed"
+    assert runs["dover"].status == "completed"
+    assert runs["jobberman"].status == "not_configured"
 
 
 def test_feed_endpoint_reports_unconfigured_sources(
     client: TestClient,
+    db: Session,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
         ingestion_router,
         "settings",
-        Settings(database_url="sqlite+pysqlite:///:memory:"),
+        Settings(_env_file=None, database_url="sqlite+pysqlite:///:memory:"),
     )
     response = client.post("/ingestion/feeds/run")
 
@@ -364,3 +483,9 @@ def test_feed_endpoint_reports_unconfigured_sources(
         "jobberman",
         "jobtogether",
     }
+    runs = list(db.scalars(select(IngestionRun)).all())
+    assert len(runs) == 5
+    assert {run.status for run in runs} == {"not_configured"}
+    history = client.get("/ingestion/runs?status=not_configured")
+    assert history.status_code == 200
+    assert len(history.json()) == 5

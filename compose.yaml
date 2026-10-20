@@ -22,6 +22,21 @@ services:
       APP_NAME: ${APP_NAME:-Remote Job Aggregator API}
       APP_VERSION: ${APP_VERSION:-0.2.0}
       DATABASE_URL: postgresql+psycopg://jobapp:${POSTGRES_PASSWORD}@db:5432/job_aggregator
+      HIRING_CAFE_FEED_URL: ${HIRING_CAFE_FEED_URL:-}
+      DOVER_FEED_URL: ${DOVER_FEED_URL:-}
+      WELLFOUND_FEED_URL: ${WELLFOUND_FEED_URL:-}
+      JOBBERMAN_FEED_URL: ${JOBBERMAN_FEED_URL:-}
+      JOBTOGETHER_FEED_URL: ${JOBTOGETHER_FEED_URL:-}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+      INGESTION_INTERVAL_SECONDS: ${INGESTION_INTERVAL_SECONDS:-21600}
+      INGESTION_FRESHNESS_DAYS: ${INGESTION_FRESHNESS_DAYS:-30}
+      INGESTION_RETRY_ATTEMPTS: ${INGESTION_RETRY_ATTEMPTS:-2}
+      INGESTION_RETRY_BACKOFF_SECONDS: ${INGESTION_RETRY_BACKOFF_SECONDS:-0.5}
+      TELEGRAM_RETRY_ATTEMPTS: ${TELEGRAM_RETRY_ATTEMPTS:-3}
+      TELEGRAM_RETRY_BACKOFF_SECONDS: ${TELEGRAM_RETRY_BACKOFF_SECONDS:-2}
+      TELEGRAM_MIN_RELEVANCE_SCORE: ${TELEGRAM_MIN_RELEVANCE_SCORE:-50}
+      TELEGRAM_INCLUDE_COUNTRY_RESTRICTED: ${TELEGRAM_INCLUDE_COUNTRY_RESTRICTED:-false}
     ports:
       - "8000:8000"
     depends_on:
@@ -30,6 +45,44 @@ services:
     command: >
       sh -c "python -m alembic upgrade head &&
       uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).read()",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  worker:
+    build: .
+    environment:
+      APP_NAME: ${APP_NAME:-Remote Job Aggregator API}
+      APP_VERSION: ${APP_VERSION:-0.2.0}
+      DATABASE_URL: postgresql+psycopg://jobapp:${POSTGRES_PASSWORD}@db:5432/job_aggregator
+      HIRING_CAFE_FEED_URL: ${HIRING_CAFE_FEED_URL:-}
+      DOVER_FEED_URL: ${DOVER_FEED_URL:-}
+      WELLFOUND_FEED_URL: ${WELLFOUND_FEED_URL:-}
+      JOBBERMAN_FEED_URL: ${JOBBERMAN_FEED_URL:-}
+      JOBTOGETHER_FEED_URL: ${JOBTOGETHER_FEED_URL:-}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+      INGESTION_INTERVAL_SECONDS: ${INGESTION_INTERVAL_SECONDS:-21600}
+      INGESTION_FRESHNESS_DAYS: ${INGESTION_FRESHNESS_DAYS:-30}
+      INGESTION_RETRY_ATTEMPTS: ${INGESTION_RETRY_ATTEMPTS:-2}
+      INGESTION_RETRY_BACKOFF_SECONDS: ${INGESTION_RETRY_BACKOFF_SECONDS:-0.5}
+      TELEGRAM_RETRY_ATTEMPTS: ${TELEGRAM_RETRY_ATTEMPTS:-3}
+      TELEGRAM_RETRY_BACKOFF_SECONDS: ${TELEGRAM_RETRY_BACKOFF_SECONDS:-2}
+      TELEGRAM_MIN_RELEVANCE_SCORE: ${TELEGRAM_MIN_RELEVANCE_SCORE:-50}
+      TELEGRAM_INCLUDE_COUNTRY_RESTRICTED: ${TELEGRAM_INCLUDE_COUNTRY_RESTRICTED:-false}
+    command: ["python", "-m", "app.worker"]
+    depends_on:
+      api:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:
