@@ -1,8 +1,8 @@
 # Remote Job Aggregator
 
-FastAPI backend and scheduled worker for collecting permitted job feeds,
-filtering and scoring listings, persisting ingestion history, and sending
-optional Telegram alerts.
+FastAPI backend, scheduled worker, and React dashboard for collecting
+permitted job feeds, filtering and scoring listings, persisting ingestion
+history, and sending optional Telegram alerts.
 
 ## Run locally with Docker Compose
 
@@ -17,7 +17,33 @@ optional Telegram alerts.
 
 The API applies Alembic migrations before starting. The worker waits for the
 API health check, runs an ingestion/notification cycle immediately, then
-repeats at `INGESTION_INTERVAL_SECONDS`.
+repeats at `INGESTION_INTERVAL_SECONDS`. Open the dashboard at
+`http://localhost:4173`; the frontend proxy forwards API requests over the
+Compose network.
+
+## Dashboard development
+
+The React + TypeScript app lives in `frontend/`. It reads jobs, sources,
+ingestion runs, and database health from the FastAPI API. It supports
+searching/filtering the latest 100 jobs, viewing job details and the original
+application link, monitoring source runs, and manually starting ingestion.
+
+For standalone development, start the API on port 8000, then run:
+
+```powershell
+Set-Location frontend
+npm ci
+npm run dev
+```
+
+Vite serves the dashboard at `http://localhost:5173` and proxies `/api` to
+`http://127.0.0.1:8000`. Set `VITE_API_BASE_URL` only if the API is hosted at a
+different base URL.
+
+The dashboard styling uses Tailwind CSS. Shared API shapes live in
+`frontend/src/types.ts`; API requests, dashboard state, filters, and view
+components are separated into `api.ts`, `hooks/`, `utils/`, and `components/`
+under `frontend/src/`.
 
 For a local Python environment, install `requirements.txt`, run
 `python -m alembic upgrade head`, then start the API with
@@ -108,9 +134,8 @@ original delivery may have succeeded; inspect it before manually retrying.
   resuming ingestion.
 - Feed URLs and job text are external data; validate a source's terms and
   geographic eligibility independently.
-- This MVP does not include the React dashboard, user accounts, or
-  authentication/authorization for write and ingestion endpoints. Do not expose
-  those endpoints to an untrusted public network until access controls are
-  added.
+- User accounts and authentication/authorization for write and ingestion
+  endpoints are not included. Do not expose those endpoints to an untrusted
+  public network until access controls are added.
 - Live Neon migration and Telegram delivery still require valid deployment
   configuration and must be verified in that environment.
