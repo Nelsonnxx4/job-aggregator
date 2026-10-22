@@ -43,7 +43,18 @@ export function JobCard({ job, source, onOpen }: JobCardProps) {
           <div className="mt-1 flex items-center gap-1.5 text-[9px] text-slate-500 md:text-[10px]">
             <span>{job.company}</span>
             <span className="text-slate-300">·</span>
-            <span>{source?.name ?? "Job source"}</span>
+            {source?.base_url ? (
+              <a
+                className="text-indigo-600 underline-offset-2 hover:underline"
+                href={source.base_url}
+                target="_blank"
+                rel="noreferrer"
+              >
+                {source.name}
+              </a>
+            ) : (
+              <span>{source?.name ?? "Job source"}</span>
+            )}
           </div>
         </div>
         <div

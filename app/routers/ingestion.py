@@ -11,6 +11,11 @@ from app.ingestion.arbeitnow import (
     ingest_arbeitnow,
 )
 from app.ingestion.job_feeds import ingest_configured_job_feeds
+from app.ingestion.remoteok import (
+    SOURCE_NAME as REMOTEOK_SOURCE_NAME,
+    SOURCE_SLUG as REMOTEOK_SOURCE_SLUG,
+    ingest_remoteok,
+)
 from app.ingestion.run_tracking import (
     IngestionAlreadyRunning,
     execute_tracked_ingestion,
@@ -20,6 +25,49 @@ from app.models import IngestionRun, JobSource
 from app.schemas import IngestionRunRead
 
 router = APIRouter(prefix="/ingestion", tags=["Ingestion"])
+
+
+@router.post("/remoteok/run")
+def run_remoteok_ingestion(
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    try:
+        source = db.scalar(
+            select(JobSource).where(
+                JobSource.slug == REMOTEOK_SOURCE_SLUG
+            )
+        )
+        if source is not None and not source.is_active:
+            record_unavailable_source(
+                db,
+                source_name=REMOTEOK_SOURCE_NAME,
+                source_slug=REMOTEOK_SOURCE_SLUG,
+                status="disabled",
+            )
+            return {"message": "Remote OK ingestion skipped", "status": "disabled"}
+
+        stats = execute_tracked_ingestion(
+            db,
+            source_name=REMOTEOK_SOURCE_NAME,
+            source_slug=REMOTEOK_SOURCE_SLUG,
+            ingest=lambda: ingest_remoteok(
+                db,
+                days=settings.ingestion_freshness_days,
+                retry_attempts=settings.ingestion_retry_attempts,
+                retry_backoff_seconds=settings.ingestion_retry_backoff_seconds,
+            ),
+        )
+        return {"message": "Remote OK ingestion completed", "stats": stats}
+    except IngestionAlreadyRunning as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Remote OK ingestion is already running.",
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="Remote OK ingestion failed. Check the server logs.",
+        ) from exc
 
 
 @router.post("/arbeitnow/run")

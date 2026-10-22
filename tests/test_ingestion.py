@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.database import Base, get_db
-from app.ingestion import arbeitnow
+from app.ingestion import arbeitnow, remoteok
 from app.ingestion.run_tracking import (
     IngestionAlreadyRunning,
     execute_tracked_ingestion,
@@ -484,3 +484,155 @@ def test_rejects_invalid_ingestion_limits(
 ) -> None:
     with pytest.raises(ValueError, match="days and max_pages must be at least 1"):
         arbeitnow.ingest_arbeitnow(db, days=days, max_pages=max_pages)
+
+
+def test_remoteok_ingests_attributed_remote_jobs_and_deduplicates(
+    db: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    job_data = {
+        "id": "12345",
+        "position": "Remote Backend Engineer",
+        "company": "Example Co",
+        "url": "https://remoteok.com/remote-jobs/remote-backend-engineer-12345",
+        "epoch": datetime.now(timezone.utc).timestamp(),
+        "location": "Worldwide",
+        "description": "<p>Build <strong>great</strong> products.</p>",
+        "tags": ["Python", "APIs"],
+        "position_type": "Full-time",
+    }
+
+    class Response:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> list[dict[str, object]]:
+            return [{"legal": "terms"}, job_data]
+
+    class Client:
+        def __enter__(self) -> "Client":
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            return None
+
+        def get(self, url: str) -> Response:
+            assert url == remoteok.API_URL
+            return Response()
+
+    def make_client(**kwargs: object) -> Client:
+        assert kwargs["timeout"] == 20.0
+        headers = kwargs.get("headers")
+        assert isinstance(headers, dict)
+        assert "User-Agent" in headers
+        return Client()
+
+    monkeypatch.setattr(remoteok.httpx, "Client", make_client)
+
+    first_stats = remoteok.ingest_remoteok(db)
+    second_stats = remoteok.ingest_remoteok(db)
+
+    job = db.scalar(select(Job))
+    source = db.scalar(select(JobSource).where(JobSource.slug == "remoteok"))
+    assert first_stats == {
+        "fetched": 1,
+        "saved": 1,
+        "duplicates": 0,
+        "stale": 0,
+        "skipped": 0,
+    }
+    assert second_stats["saved"] == 0
+    assert second_stats["duplicates"] == 1
+    assert job is not None
+    assert job.title == "Remote Backend Engineer"
+    assert job.company == "Example Co"
+    assert job.description == "Build great products.\n\nSkills/tags: Python, APIs"
+    assert job.remote_status == "remote"
+    assert job.url == job_data["url"]
+    assert source is not None
+    assert source.base_url == "https://remoteok.com"
+    assert len(db.scalars(select(Job)).all()) == 1
+
+
+def test_remoteok_rejects_non_remoteok_listing_urls(
+    db: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    job_data = {
+        "id": "12345",
+        "position": "Backend Engineer",
+        "company": "Example Co",
+        "url": "https://example.com/jobs/12345",
+        "epoch": datetime.now(timezone.utc).timestamp(),
+    }
+
+    class Response:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> list[dict[str, object]]:
+            return [job_data]
+
+    class Client:
+        def __enter__(self) -> "Client":
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            return None
+
+        def get(self, url: str) -> Response:
+            assert url == remoteok.API_URL
+            return Response()
+
+    monkeypatch.setattr(remoteok.httpx, "Client", lambda **_: Client())
+
+    stats = remoteok.ingest_remoteok(db)
+
+    assert stats["saved"] == 0
+    assert stats["skipped"] == 1
+    assert db.scalar(select(Job.id)) is None
+
+
+def test_remoteok_ingestion_endpoint_returns_statistics(
+    client: TestClient,
+    db: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stats = {
+        "fetched": 1,
+        "saved": 1,
+        "duplicates": 0,
+        "stale": 0,
+        "skipped": 0,
+    }
+
+    def fake_ingest(
+        _db: Session,
+        *,
+        days: int,
+        retry_attempts: int,
+        retry_backoff_seconds: float,
+    ) -> dict[str, int]:
+        assert _db.is_active
+        assert days == 30
+        assert retry_attempts == 2
+        assert retry_backoff_seconds == 0.5
+        return stats
+
+    monkeypatch.setattr(
+        ingestion_router, "ingest_remoteok", fake_ingest
+    )
+
+    response = client.post("/ingestion/remoteok/run")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "message": "Remote OK ingestion completed",
+        "stats": stats,
+    }
+    run = db.scalar(
+        select(IngestionRun).where(IngestionRun.source_slug == "remoteok")
+    )
+    assert run is not None
+    assert run.status == "completed"
+    assert run.saved == 1

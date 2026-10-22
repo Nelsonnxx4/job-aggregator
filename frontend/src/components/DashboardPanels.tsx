@@ -81,9 +81,20 @@ export function DashboardPanels({
                     {source.name.slice(0, 1).toUpperCase()}
                   </span>
                   <span className="grid min-w-0 flex-1 gap-0.5">
-                    <strong className="overflow-hidden text-ellipsis whitespace-nowrap text-[10px] text-slate-700">
-                      {source.name}
-                    </strong>
+                    {source.base_url ? (
+                      <a
+                        className="overflow-hidden text-ellipsis whitespace-nowrap text-[10px] font-bold text-slate-700 underline-offset-2 hover:text-brand hover:underline"
+                        href={source.base_url}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        {source.name}
+                      </a>
+                    ) : (
+                      <strong className="overflow-hidden text-ellipsis whitespace-nowrap text-[10px] text-slate-700">
+                        {source.name}
+                      </strong>
+                    )}
                     <span className="text-[8px] text-slate-400">
                       {lastRun
                         ? `${formatTime(lastRun.finished_at)} · ${lastRun.status}`

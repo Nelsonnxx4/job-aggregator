@@ -4,6 +4,7 @@ import { loadDashboardData, request } from "../api";
 import type { DashboardData, IngestionAction } from "../types";
 
 const ingestionActions: IngestionAction[] = [
+  { name: "Remote OK", path: "/ingestion/remoteok/run" },
   { name: "configured feeds", path: "/ingestion/feeds/run" },
   { name: "Arbeitnow", path: "/ingestion/arbeitnow/run" },
 ];

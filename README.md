@@ -50,11 +50,12 @@ For a local Python environment, install `requirements.txt`, run
 `uvicorn app.main:app --reload`. Start the scheduled worker separately with
 `python -m app.worker`.
 
-## Feed configuration
+## Job listing sources
 
-The service supports permitted RSS 2.0, Atom, or JSON Feed URLs for Hiring
-Cafe, Dover, Wellfound, Jobberman, and JobTogether. It does not scrape job-board
-pages. Only configure URLs that the source authorizes for automated access.
+The service collects listings from the public Arbeitnow and Remote OK job-board
+APIs, and can additionally consume authorized RSS 2.0, Atom, or JSON feeds.
+It does not scrape arbitrary job-board pages. Leave feed settings blank unless
+you have a feed URL the provider permits you to use.
 
 ```dotenv
 HIRING_CAFE_FEED_URL=
@@ -71,11 +72,22 @@ eligibility are stored separately. Importers infer geography only
 from explicit text such as “worldwide” or “EMEA”; those labels are marked
 inferred, not verified. A generic “remote” label does not mean worldwide.
 
-Arbeitnow is also supported through its documented job-board API. The
-`POST /ingestion/arbeitnow/run` and `POST /ingestion/feeds/run` endpoints allow
-manual runs. Each feed is isolated, so one source failure does not stop other
-sources. `GET /ingestion/runs` returns the latest run records and statistics;
-filter with `source_id` and/or `status`.
+The public APIs do not require a paid subscription or API key. Review the
+providers' current terms before publishing listings. Remote OK requires a
+followable link to Remote OK and source attribution; the dashboard links each
+listing's source and original job listing. Do not use the Remote OK logo
+without written permission. A provider may change API access or terms.
+See the [Arbeitnow Job Board API](https://www.arbeitnow.com/api/job-board-api)
+and [Remote OK API terms](https://remoteok.com/api) for current provider
+details. Remotive is not enabled because its public API terms restrict
+submitting listings to third-party websites.
+
+`POST /ingestion/arbeitnow/run`, `POST /ingestion/remoteok/run`, and
+`POST /ingestion/feeds/run` allow manual runs. The worker runs both public API
+sources on its schedule. Each source has independent run tracking, and a
+failure at one source does not stop collection from others.
+`GET /ingestion/runs` returns the latest run records and statistics; filter
+with `source_id` and/or `status`.
 
 Source registration is idempotent for an exact matching name, slug, and base
 URL (`POST /sources` returns `200` for a reused source). Use

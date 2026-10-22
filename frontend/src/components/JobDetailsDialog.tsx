@@ -103,7 +103,21 @@ export function JobDetailsDialog({
           </div>
         )}
         <div className="my-[18px] flex justify-between gap-3 text-[9px] text-slate-400">
-          <span>Found on {source?.name ?? "job board"}</span>
+          <span>
+            Found on{" "}
+            {source?.base_url ? (
+              <a
+                className="text-indigo-600 underline underline-offset-2"
+                href={source.base_url}
+                target="_blank"
+                rel="noreferrer"
+              >
+                {source.name}
+              </a>
+            ) : (
+              source?.name ?? "job board"
+            )}
+          </span>
           <span>Match score {job.relevance_score}/100</span>
         </div>
         <a

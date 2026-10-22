@@ -12,6 +12,11 @@ from app.ingestion.arbeitnow import (
     ingest_arbeitnow,
 )
 from app.ingestion.job_feeds import ingest_configured_job_feeds
+from app.ingestion.remoteok import (
+    SOURCE_NAME as REMOTEOK_SOURCE_NAME,
+    SOURCE_SLUG as REMOTEOK_SOURCE_SLUG,
+    ingest_remoteok,
+)
 from app.ingestion.run_tracking import (
     IngestionAlreadyRunning,
     execute_tracked_ingestion,
@@ -57,6 +62,41 @@ def run_cycle() -> None:
             except Exception as exc:
                 logger.error(
                     "Scheduled Arbeitnow ingestion failed (%s)",
+                    type(exc).__name__,
+                )
+
+        remoteok_source = db.scalar(
+            select(JobSource).where(
+                JobSource.slug == REMOTEOK_SOURCE_SLUG
+            )
+        )
+        if remoteok_source is not None and not remoteok_source.is_active:
+            record_unavailable_source(
+                db,
+                source_name=REMOTEOK_SOURCE_NAME,
+                source_slug=REMOTEOK_SOURCE_SLUG,
+                status="disabled",
+            )
+        else:
+            try:
+                execute_tracked_ingestion(
+                    db,
+                    source_name=REMOTEOK_SOURCE_NAME,
+                    source_slug=REMOTEOK_SOURCE_SLUG,
+                    ingest=lambda: ingest_remoteok(
+                        db,
+                        days=settings.ingestion_freshness_days,
+                        retry_attempts=settings.ingestion_retry_attempts,
+                        retry_backoff_seconds=(
+                            settings.ingestion_retry_backoff_seconds
+                        ),
+                    ),
+                )
+            except IngestionAlreadyRunning:
+                logger.info("Scheduled Remote OK ingestion is already active")
+            except Exception as exc:
+                logger.error(
+                    "Scheduled Remote OK ingestion failed (%s)",
                     type(exc).__name__,
                 )
 
