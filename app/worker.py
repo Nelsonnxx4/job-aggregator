@@ -12,10 +12,20 @@ from app.ingestion.arbeitnow import (
     ingest_arbeitnow,
 )
 from app.ingestion.job_feeds import ingest_configured_job_feeds
+from app.ingestion.justjoinit import (
+    SOURCE_NAME as JUSTJOINIT_SOURCE_NAME,
+    SOURCE_SLUG as JUSTJOINIT_SOURCE_SLUG,
+    ingest_justjoinit,
+)
 from app.ingestion.remoteok import (
     SOURCE_NAME as REMOTEOK_SOURCE_NAME,
     SOURCE_SLUG as REMOTEOK_SOURCE_SLUG,
     ingest_remoteok,
+)
+from app.ingestion.remotive import (
+    SOURCE_NAME as REMOTIVE_SOURCE_NAME,
+    SOURCE_SLUG as REMOTIVE_SOURCE_SLUG,
+    ingest_remotive,
 )
 from app.ingestion.run_tracking import (
     IngestionAlreadyRunning,
@@ -97,6 +107,73 @@ def run_cycle() -> None:
             except Exception as exc:
                 logger.error(
                     "Scheduled Remote OK ingestion failed (%s)",
+                    type(exc).__name__,
+                )
+
+        remote_source = db.scalar(
+            select(JobSource).where(JobSource.slug == REMOTIVE_SOURCE_SLUG)
+        )
+        if remote_source is not None and not remote_source.is_active:
+            record_unavailable_source(
+                db,
+                source_name=REMOTIVE_SOURCE_NAME,
+                source_slug=REMOTIVE_SOURCE_SLUG,
+                status="disabled",
+            )
+        else:
+            try:
+                execute_tracked_ingestion(
+                    db,
+                    source_name=REMOTIVE_SOURCE_NAME,
+                    source_slug=REMOTIVE_SOURCE_SLUG,
+                    ingest=lambda: ingest_remotive(
+                        db,
+                        days=settings.ingestion_freshness_days,
+                        retry_attempts=settings.ingestion_retry_attempts,
+                        retry_backoff_seconds=(
+                            settings.ingestion_retry_backoff_seconds
+                        ),
+                    ),
+                )
+            except IngestionAlreadyRunning:
+                logger.info("Scheduled Remotive ingestion is already active")
+            except Exception as exc:
+                logger.error(
+                    "Scheduled Remotive ingestion failed (%s)",
+                    type(exc).__name__,
+                )
+
+        justjoinit_source = db.scalar(
+            select(JobSource).where(JobSource.slug == JUSTJOINIT_SOURCE_SLUG)
+        )
+        if justjoinit_source is not None and not justjoinit_source.is_active:
+            record_unavailable_source(
+                db,
+                source_name=JUSTJOINIT_SOURCE_NAME,
+                source_slug=JUSTJOINIT_SOURCE_SLUG,
+                status="disabled",
+            )
+        else:
+            try:
+                execute_tracked_ingestion(
+                    db,
+                    source_name=JUSTJOINIT_SOURCE_NAME,
+                    source_slug=JUSTJOINIT_SOURCE_SLUG,
+                    ingest=lambda: ingest_justjoinit(
+                        db,
+                        days=settings.ingestion_freshness_days,
+                        max_pages=1,
+                        retry_attempts=settings.ingestion_retry_attempts,
+                        retry_backoff_seconds=(
+                            settings.ingestion_retry_backoff_seconds
+                        ),
+                    ),
+                )
+            except IngestionAlreadyRunning:
+                logger.info("Scheduled JustJoin.it ingestion is already active")
+            except Exception as exc:
+                logger.error(
+                    "Scheduled JustJoin.it ingestion failed (%s)",
                     type(exc).__name__,
                 )
 

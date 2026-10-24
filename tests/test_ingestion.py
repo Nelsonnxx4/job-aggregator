@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.database import Base, get_db
-from app.ingestion import arbeitnow, remoteok
+from app.ingestion import arbeitnow, justjoinit, remoteok, remotive
 from app.ingestion.run_tracking import (
     IngestionAlreadyRunning,
     execute_tracked_ingestion,
@@ -636,3 +636,129 @@ def test_remoteok_ingestion_endpoint_returns_statistics(
     assert run is not None
     assert run.status == "completed"
     assert run.saved == 1
+
+
+def test_justjoinit_ingests_public_api_offers(
+    db: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("JUSTJOINIT_CATEGORIES", "1")
+    published_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    payload = {
+        "data": [
+            {
+                "slug": "react-developer-acme",
+                "title": " React Developer ",
+                "companyName": " Acme ",
+                "city": "Warsaw",
+                "workplaceType": "remote",
+                "publishedAt": published_at,
+                "requiredSkills": ["React", "TypeScript"],
+                "experienceLevel": "mid",
+                "employmentTypes": [
+                    {"type": "b2b", "from": 120000, "to": 150000, "currency": "PLN"}
+                ],
+            }
+        ]
+    }
+
+    class Response:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return payload
+
+    class Client:
+        def __enter__(self) -> "Client":
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            return None
+
+        def get(self, url: str, *, params: list[tuple[str, str]], headers: dict[str, str]) -> Response:
+            assert url == justjoinit.API_URL
+            assert params[0] == ("categories[0]", "1")
+            assert headers["Accept"] == "application/json"
+            return Response()
+
+    monkeypatch.setattr(justjoinit.httpx, "Client", lambda **_: Client())
+
+    stats = justjoinit.ingest_justjoinit(db, days=30, max_pages=1)
+
+    job = db.scalar(select(Job).where(Job.source_id == db.scalar(select(JobSource.id).where(JobSource.slug == "justjoinit"))))
+    source = db.scalar(select(JobSource).where(JobSource.slug == "justjoinit"))
+    assert stats == {
+        "fetched": 1,
+        "saved": 1,
+        "duplicates": 0,
+        "stale": 0,
+        "skipped": 0,
+    }
+    assert job is not None
+    assert job.title == "React Developer"
+    assert job.company == "Acme"
+    assert job.url == "https://justjoin.it/job-offer/react-developer-acme"
+    assert job.remote_status == "remote"
+    assert source is not None
+    assert source.base_url == "https://justjoin.it"
+
+
+def test_remotive_ingests_public_api_jobs(
+    db: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    published_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    payload = {
+        "jobs": [
+            {
+                "id": 42,
+                "title": "Frontend Engineer",
+                "company_name": "Example Co",
+                "url": "https://remotive.com/remote-jobs/frontend-engineer-example",
+                "publication_date": published_at,
+                "candidate_required_location": "Remote",
+                "description": "Build great products.",
+                "job_type": "Full-time",
+            }
+        ]
+    }
+
+    class Response:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return payload
+
+    class Client:
+        def __enter__(self) -> "Client":
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            return None
+
+        def get(self, url: str) -> Response:
+            assert url == remotive.API_URL
+            return Response()
+
+    monkeypatch.setattr(remotive.httpx, "Client", lambda **_: Client())
+
+    stats = remotive.ingest_remotive(db)
+
+    job = db.scalar(select(Job).where(Job.source_id == db.scalar(select(JobSource.id).where(JobSource.slug == "remotive"))))
+    source = db.scalar(select(JobSource).where(JobSource.slug == "remotive"))
+    assert stats == {
+        "fetched": 1,
+        "saved": 1,
+        "duplicates": 0,
+        "stale": 0,
+        "skipped": 0,
+    }
+    assert job is not None
+    assert job.title == "Frontend Engineer"
+    assert job.company == "Example Co"
+    assert job.remote_status == "remote"
+    assert job.url == "https://remotive.com/remote-jobs/frontend-engineer-example"
+    assert source is not None
+    assert source.base_url == "https://remotive.com"

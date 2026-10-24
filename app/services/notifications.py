@@ -157,6 +157,22 @@ def _send_message(
     return False, None, "TelegramRetryLimitReached", max_attempts
 
 
+def send_telegram_test_message(settings: Settings) -> tuple[bool, str | None]:
+    if not settings.telegram_bot_token or not settings.telegram_chat_id:
+        raise ValueError("Telegram bot token and chat ID must both be configured")
+
+    with httpx.Client(timeout=20.0) as client:
+        success, _, error, _ = _send_message(
+            client,
+            token=settings.telegram_bot_token,
+            chat_id=settings.telegram_chat_id,
+            text="Remote Job Aggregator: Telegram delivery test",
+            max_attempts=settings.telegram_retry_attempts,
+            backoff_seconds=settings.telegram_retry_backoff_seconds,
+        )
+    return success, error
+
+
 def dispatch_job_notifications(
     db: Session,
     settings: Settings,

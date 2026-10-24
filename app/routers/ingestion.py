@@ -11,10 +11,20 @@ from app.ingestion.arbeitnow import (
     ingest_arbeitnow,
 )
 from app.ingestion.job_feeds import ingest_configured_job_feeds
+from app.ingestion.justjoinit import (
+    SOURCE_NAME as JUSTJOINIT_SOURCE_NAME,
+    SOURCE_SLUG as JUSTJOINIT_SOURCE_SLUG,
+    ingest_justjoinit,
+)
 from app.ingestion.remoteok import (
     SOURCE_NAME as REMOTEOK_SOURCE_NAME,
     SOURCE_SLUG as REMOTEOK_SOURCE_SLUG,
     ingest_remoteok,
+)
+from app.ingestion.remotive import (
+    SOURCE_NAME as REMOTIVE_SOURCE_NAME,
+    SOURCE_SLUG as REMOTIVE_SOURCE_SLUG,
+    ingest_remotive,
 )
 from app.ingestion.run_tracking import (
     IngestionAlreadyRunning,
@@ -116,6 +126,101 @@ def run_arbeitnow_ingestion(
         raise HTTPException(
             status_code=502,
             detail="Arbeitnow ingestion failed. Check the server logs.",
+        ) from exc
+
+
+@router.post("/justjoinit/run")
+def run_justjoinit_ingestion(
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    try:
+        source = db.scalar(
+            select(JobSource).where(JobSource.slug == JUSTJOINIT_SOURCE_SLUG)
+        )
+        if source is not None and not source.is_active:
+            record_unavailable_source(
+                db,
+                source_name=JUSTJOINIT_SOURCE_NAME,
+                source_slug=JUSTJOINIT_SOURCE_SLUG,
+                status="disabled",
+            )
+            return {
+                "message": "JustJoin.it ingestion skipped",
+                "status": "disabled",
+            }
+
+        stats = execute_tracked_ingestion(
+            db,
+            source_name=JUSTJOINIT_SOURCE_NAME,
+            source_slug=JUSTJOINIT_SOURCE_SLUG,
+            ingest=lambda: ingest_justjoinit(
+                db,
+                days=settings.ingestion_freshness_days,
+                max_pages=1,
+                retry_attempts=settings.ingestion_retry_attempts,
+                retry_backoff_seconds=settings.ingestion_retry_backoff_seconds,
+            ),
+        )
+        return {
+            "message": "JustJoin.it ingestion completed",
+            "stats": stats,
+        }
+    except IngestionAlreadyRunning as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="JustJoin.it ingestion is already running.",
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="JustJoin.it ingestion failed. Check the server logs.",
+        ) from exc
+
+
+@router.post("/remotive/run")
+def run_remotive_ingestion(
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    try:
+        source = db.scalar(
+            select(JobSource).where(JobSource.slug == REMOTIVE_SOURCE_SLUG)
+        )
+        if source is not None and not source.is_active:
+            record_unavailable_source(
+                db,
+                source_name=REMOTIVE_SOURCE_NAME,
+                source_slug=REMOTIVE_SOURCE_SLUG,
+                status="disabled",
+            )
+            return {
+                "message": "Remotive ingestion skipped",
+                "status": "disabled",
+            }
+
+        stats = execute_tracked_ingestion(
+            db,
+            source_name=REMOTIVE_SOURCE_NAME,
+            source_slug=REMOTIVE_SOURCE_SLUG,
+            ingest=lambda: ingest_remotive(
+                db,
+                days=settings.ingestion_freshness_days,
+                retry_attempts=settings.ingestion_retry_attempts,
+                retry_backoff_seconds=settings.ingestion_retry_backoff_seconds,
+            ),
+        )
+        return {
+            "message": "Remotive ingestion completed",
+            "stats": stats,
+        }
+    except IngestionAlreadyRunning as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Remotive ingestion is already running.",
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="Remotive ingestion failed. Check the server logs.",
         ) from exc
 
 

@@ -52,10 +52,10 @@ For a local Python environment, install `requirements.txt`, run
 
 ## Job listing sources
 
-The service collects listings from the public Arbeitnow and Remote OK job-board
-APIs, and can additionally consume authorized RSS 2.0, Atom, or JSON feeds.
-It does not scrape arbitrary job-board pages. Leave feed settings blank unless
-you have a feed URL the provider permits you to use.
+The service collects listings from public job-board APIs (Arbeitnow, Remote
+OK, Remotive, and JustJoin.it) and can additionally consume authorized RSS 2.0,
+Atom, or JSON feeds. It does not scrape arbitrary job-board pages. Leave feed
+settings blank unless you have a feed URL the provider permits you to use.
 
 ```dotenv
 HIRING_CAFE_FEED_URL=
@@ -63,6 +63,7 @@ DOVER_FEED_URL=
 WELLFOUND_FEED_URL=
 JOBBERMAN_FEED_URL=
 JOBTOGETHER_FEED_URL=
+JUSTJOINIT_CATEGORIES=1,2
 ```
 
 A listing needs a title, company (or feed author), application URL, and valid
@@ -77,13 +78,14 @@ providers' current terms before publishing listings. Remote OK requires a
 followable link to Remote OK and source attribution; the dashboard links each
 listing's source and original job listing. Do not use the Remote OK logo
 without written permission. A provider may change API access or terms.
-See the [Arbeitnow Job Board API](https://www.arbeitnow.com/api/job-board-api)
-and [Remote OK API terms](https://remoteok.com/api) for current provider
-details. Remotive is not enabled because its public API terms restrict
-submitting listings to third-party websites.
+See the [Arbeitnow Job Board API](https://www.arbeitnow.com/api/job-board-api),
+[Remote OK API terms](https://remoteok.com/api), and the
+[Remotive remote jobs API](https://remotive.com/api) for current provider
+details. The JustJoin.it adapter uses its public unauthenticated offer API.
 
-`POST /ingestion/arbeitnow/run`, `POST /ingestion/remoteok/run`, and
-`POST /ingestion/feeds/run` allow manual runs. The worker runs both public API
+`POST /ingestion/arbeitnow/run`, `POST /ingestion/remoteok/run`,
+`POST /ingestion/remotive/run`, `POST /ingestion/justjoinit/run`, and
+`POST /ingestion/feeds/run` allow manual runs. The worker runs the public API
 sources on its schedule. Each source has independent run tracking, and a
 failure at one source does not stop collection from others.
 `GET /ingestion/runs` returns the latest run records and statistics; filter
@@ -128,6 +130,17 @@ Delivery state is persisted with a unique record per job. Telegram rate limits
 are retried within the configured bounds. A delivery left in `sending` after a
 worker crash is not resent automatically, avoiding duplicate alerts when the
 original delivery may have succeeded; inspect it before manually retrying.
+
+To verify the configured bot and chat without waiting for a qualifying job,
+run this one-off test message from the project root:
+
+```powershell
+python -m app.telegram_test
+```
+
+The command uses the configured Telegram retry settings and reports success
+without printing the bot token. With Docker Compose, run
+`docker compose run --rm worker python -m app.telegram_test`.
 
 ## Operations and limitations
 

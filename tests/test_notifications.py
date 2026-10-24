@@ -155,6 +155,35 @@ def test_sends_only_once_for_a_new_eligible_job(
     assert records[0].attempts == 1
 
 
+def test_telegram_test_message_is_delivered(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_client = FakeClient([FakeResponse({"ok": True})])
+    monkeypatch.setattr(
+        notifications.httpx,
+        "Client",
+        lambda *, timeout: fake_client,
+    )
+
+    sent, error = notifications.send_telegram_test_message(_settings())
+
+    assert sent is True
+    assert error is None
+    assert len(fake_client.requests) == 1
+    request_url, payload = fake_client.requests[0]
+    assert request_url.endswith("/sendMessage")
+    assert "test-token" in request_url
+    assert payload["chat_id"] == "test-chat"
+    assert payload["text"] == "Remote Job Aggregator: Telegram delivery test"
+
+
+def test_telegram_test_message_reports_missing_configuration() -> None:
+    with pytest.raises(ValueError, match="token and chat ID"):
+        notifications.send_telegram_test_message(
+            _settings(telegram_bot_token=None, telegram_chat_id=None)
+        )
+
+
 def test_unverified_geography_is_not_alerted(
     db: Session,
     monkeypatch: pytest.MonkeyPatch,
