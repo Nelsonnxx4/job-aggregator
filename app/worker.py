@@ -1,6 +1,6 @@
 import logging
 import time
-from threading import Event
+from threading import Event, Lock, Thread
 
 from sqlalchemy import select
 
@@ -34,11 +34,13 @@ from app.ingestion.run_tracking import (
 )
 from app.models import JobSource
 from app.services.notifications import dispatch_job_notifications
+from app.telegram_commands import run_telegram_command_listener
 
 logger = logging.getLogger("job_aggregator.worker")
+_cycle_lock = Lock()
 
 
-def run_cycle() -> None:
+def _run_cycle(*, dispatch_notifications_after_fetch: bool) -> None:
     db = SessionLocal()
     try:
         source = db.scalar(
@@ -190,24 +192,37 @@ def run_cycle() -> None:
                 type(exc).__name__,
             )
 
-        try:
-            notification_results = dispatch_job_notifications(db, settings)
-            logger.info(
-                "Scheduled notification dispatch completed: %s",
-                notification_results,
-            )
-        except Exception as exc:
-            db.rollback()
-            logger.error(
-                "Scheduled notification dispatch failed (%s)",
-                type(exc).__name__,
-            )
+        if dispatch_notifications_after_fetch:
+            try:
+                notification_results = dispatch_job_notifications(db, settings)
+                logger.info(
+                    "Scheduled notification dispatch completed: %s",
+                    notification_results,
+                )
+            except Exception as exc:
+                db.rollback()
+                logger.error(
+                    "Scheduled notification dispatch failed (%s)",
+                    type(exc).__name__,
+                )
     finally:
         db.close()
 
 
+def run_cycle(*, dispatch_notifications: bool = True) -> None:
+    with _cycle_lock:
+        _run_cycle(dispatch_notifications_after_fetch=dispatch_notifications)
+
+
 def run_worker(stop_event: Event | None = None) -> None:
     event = stop_event or Event()
+    command_thread = Thread(
+        target=run_telegram_command_listener,
+        args=(settings, event),
+        name="telegram-command-listener",
+        daemon=True,
+    )
+    command_thread.start()
     logger.info(
         "Starting ingestion worker with a %s-second interval",
         settings.ingestion_interval_seconds,
@@ -222,6 +237,7 @@ def run_worker(stop_event: Event | None = None) -> None:
             time.monotonic() - cycle_started
         )
         event.wait(max(0, remaining))
+    command_thread.join(timeout=30)
 
 
 if __name__ == "__main__":

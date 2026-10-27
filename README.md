@@ -126,6 +126,21 @@ enabling `TELEGRAM_INCLUDE_COUNTRY_RESTRICTED` also requires Nigeria to appear
 in the job's eligible-country list. Configure the relevance threshold with
 `TELEGRAM_MIN_RELEVANCE_SCORE`.
 
+While the worker is running, send these commands to the configured bot from
+the chat identified by `TELEGRAM_CHAT_ID`:
+
+- `/fetch` runs an ingestion cycle and replies with newly saved jobs, or says
+  when none were added. It does not send the normal automatic job alerts.
+- `/verify <job ID>` or `/verify <exact listing URL>` checks a saved listing's
+  source, required fields, link scheme, age, and known duplicate status.
+- `/help` lists the commands.
+
+The command listener ignores messages from other chats. Run only one worker
+for a bot token so Telegram updates are not consumed by competing pollers.
+Verification is a set of basic consistency checks, not proof an employer or
+vacancy is genuine. Confirm jobs on the employer's official careers site and
+never pay application fees or share account passwords.
+
 Delivery state is persisted with a unique record per job. Telegram rate limits
 are retried within the configured bounds. A delivery left in `sending` after a
 worker crash is not resent automatically, avoiding duplicate alerts when the
